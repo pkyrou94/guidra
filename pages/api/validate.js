@@ -1,155 +1,95 @@
-const fs = require("fs");
-const path = require("path");
-
-function toCsvRow(values) {
-  // Escape διπλά quotes, τύλιγμα σε quotes για ασφάλεια
-  const esc = (v) => `"${String(v??"").replace(/"/g, '""')}"`;
-  return values.map(esc).join(",") + "\n";
-}
-
-async function appendCsv(filePath, headers, rowValues) {
-  const exists = fs.existsSync(filePath);
-  if (!exists) {
-    fs.writeFileSync(filePath, headers.join(",") + "\n", "utf8");
-  }
-  fs.appendFileSync(filePath, toCsvRow(rowValues), "utf8");
-}
-
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
-  const {
-    oneLiner = "",
-    targetUser = "",
-    pain = "",
-    alternatives = "",
-    channels = "",
-    pricing = "",
-    founderFit = "",
-    consent = false
-  } = req.body || {};
+  const data = req.body;
+  const required = ["oneLiner", "targetUser", "pain", "alternatives", "pricing", "founderFit"];
+  const missing = required.filter((key) => !data[key] || data[key].trim() === "");
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+  // 1️⃣ Δημιουργούμε note αν λείπουν πεδία
+  const note =
+    missing.length > 0
+      ? `⚠️ Some key fields are missing (${missing.join(", ")}). The overall score may be less accurate.`
+      : null;
 
-  const system = `
-You are a startup validation assistant. 
-Score the idea on these dimensions with integers only:
-- market (0-20)
-- severity (0-20)
-- gap (0-15)
-- distribution (0-15)
-- monetization (0-15)
-- fit (0-15)
-Return strict JSON:
+  try {
+    // 2️⃣ Καλύτερο prompt — ρεαλιστικό, “consulting style”
+    const prompt = `
+You are an expert startup evaluator and investor. Assess this business idea and respond in structured JSON.
+
+Idea details:
+- One-liner: ${data.oneLiner || "N/A"}
+- Target user: ${data.targetUser || "N/A"}
+- Problem: ${data.pain || "N/A"}
+- Alternatives: ${data.alternatives || "N/A"}
+- Pricing: ${data.pricing || "N/A"}
+- Founder fit: ${data.founderFit || "N/A"}
+
+Evaluate based on the following 4 dimensions (0-25 each):
+1. Problem clarity & urgency
+2. Target market definition
+3. Uniqueness vs alternatives
+4. Monetization viability
+
+Return a JSON like this:
 {
-  "scores": { "market": n, "severity": n, "gap": n, "distribution": n, "monetization": n, "fit": n },
-  "total": n,
-  "verdict": "Launch-ready|Iterate|Pivot",
-  "top_risks": ["...", "...", "..."],
-  "next_steps": ["...", "...", "...", "...", "..."],
-  "channels": ["...", "...", "..."],
-  "positioning": "one-sentence"
+  "scores": {
+    "problem_clarity": number,
+    "target_market": number,
+    "uniqueness": number,
+    "monetization": number
+  },
+  "total": number,
+  "verdict": "Excellent" | "Good" | "Fair" | "Weak",
+  "top_risks": [string],
+  "next_steps": [string],
+  "positioning": string
 }
-Banding: 80-100 Launch-ready; 60-79 Iterate; <60 Pivot.
-Be specific and concise.`;
 
-  const user = `
-ONE-LINER: ${oneLiner}
-TARGET USER: ${targetUser}
-PAIN: ${pain}
-ALTERNATIVES: ${alternatives}
-CHANNELS: ${channels}
-PRICING: ${pricing}
-FOUNDER FIT: ${founderFit}
+Then give realistic, short, practical next steps.
 `;
 
-  try {
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-3.5-turbo",
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user }
-        ]
-      })
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7,
+      }),
     });
 
-    const data = await r.json();
+    const result = await response.json();
 
-// Υποστήριξη και για πιθανές άλλες μορφές response
-let content = data?.choices?.[0]?.message?.content 
-            || data?.choices?.[0]?.delta?.content 
-            || data?.error?.message 
-            || JSON.stringify(data, null, 2);
-
-
-// Try to recover JSON even if OpenAI adds extra text
-let parsed;
-try {
-  parsed = JSON.parse(content);
-} catch (e) {
-  try {
-    const match = content.match(/\{[\s\S]*\}/);
-    parsed = match ? JSON.parse(match[0]) : null;
-  } catch {
-    parsed = null;
-  }
-}
-
-// If still nothing, return the raw model output for debugging
-if (!parsed) {
-  console.error("Raw model response:", content);
-  return res.status(500).json({ error: "Bad model response", raw: content });
-}
-
-
-    const s = parsed.scores || {};
-    const total = (s.market|0)+(s.severity|0)+(s.gap|0)+(s.distribution|0)+(s.monetization|0)+(s.fit|0);
-    parsed.total = total;
-
-    if (consent) {
-      try {
-        const csvPath = path.join(process.cwd(), "submissions.csv");
-        const headers = [
-          "timestamp","oneLiner","targetUser","pain","alternatives",
-          "channels","pricing","founderFit","consent",
-          "total","verdict","scores_market","scores_severity","scores_gap",
-          "scores_distribution","scores_monetization","scores_fit",
-          "top_risks","next_steps","channels_suggested","positioning"
-        ];
-
-        const s = parsed.scores || {};
-        const row = [
-          new Date().toISOString(),
-          oneLiner, targetUser, pain, alternatives,
-          channels, pricing, founderFit, consent ? "yes" : "no",
-          parsed.total, parsed.verdict, s.market, s.severity, s.gap,
-          s.distribution, s.monetization, s.fit,
-          (parsed.top_risks||[]).join(" | "),
-          (parsed.next_steps||[]).join(" | "),
-          (parsed.channels||[]).join(" | "),
-          parsed.positioning || ""
-        ];
-
-        await appendCsv(csvPath, headers, row);
-      } catch (e) {
-        console.error("CSV write error:", e);
-      }
-    } else {
-      console.log("Consent not given — skipping CSV save");
+    if (!response.ok) {
+      throw new Error(result.error?.message || "OpenAI API request failed.");
     }
 
-    return res.status(200).json(parsed);
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Server error" });
+    let parsed;
+    try {
+    // Παίρνουμε το περιεχόμενο που έστειλε το AI
+    let content = result.choices[0].message.content.trim();
+
+    // Καθαρίζουμε πιθανό markdown (```json ... ```)
+    content = content.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
+
+    parsed = JSON.parse(content);
+    } catch (err) {
+      console.error("Parsing error:", err, result.choices?.[0]?.message?.content);
+      throw new Error("Failed to parse AI response.");
+    }
+
+    // 3️⃣ Επιστρέφουμε καθαρό report + note
+    res.status(200).json({ ...parsed, note });
+  } catch (err) {
+    console.error("Validation error:", err);
+    res.status(500).json({
+      error: "⚠️ Server error during evaluation. Please try again later.",
+      details: err.message,
+    });
   }
 }

@@ -14,51 +14,55 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState(null);
   const [error, setError] = useState("");
-  const [missingFields, setMissingFields] = useState([]);
+  const [invalidFields, setInvalidFields] = useState([]);
   const onChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
 
   const submit = async (e) => {
-    e.preventDefault();
-    //Validation check for required fields
-    const required = ["oneLiner", "targetUser", "pain", "alternatives"];
-    const missing = required.filter((f) => !form[f].trim());
+  e.preventDefault();
+  setLoading(true);
+  setError("");
+  setReport(null);
 
-    // Highlight missing fields visually
-    setMissingFields(missing);
-
-    if (missing.length > 0) {
-      const formatted = missing.map((f) => {
-        if (f === "oneLiner") return "One-liner";
-        if (f === "targetUser") return "Target user";
-        if (f === "pain") return "Problem";
-        if (f === "alternatives") return "Alternatives";
-        return f;
-      });
-
-      setError(`For a more accurate score, please fill in the required fields: ${formatted.join(", ")}.`);
-      return;
-    }
-
-    if (emptyOptionals.length > 0) {
-      setError("Note: Some optional fields are missing, so your score might not be 100% accurate.");
-    }
-
-    setLoading(true); setError(""); setReport(null);
-    try {
-      const r = await fetch("/api/validate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form)
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || "Failed");
-      setReport(data);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
+  const fieldLabels = {
+    oneLiner: "One-liner",
+    targetUser: "Target user",
+    pain: "Problem (pain & frequency)",
+    alternatives: "Current alternatives / competitors",
+    pricing: "Willingness-to-pay / pricing guess",
+    founderFit: "Founder fit (background/edge)",
   };
+
+  const required = ["oneLiner", "targetUser", "pain", "alternatives"];
+  const optional = ["pricing", "founderFit"];
+
+  // Έλεγχος υποχρεωτικών πεδίων
+  const missingRequired = required.filter((key) => !form[key] || form[key].trim() === "");
+  if (missingRequired.length > 0) {
+    setInvalidFields(missingRequired);
+    const fieldNames = missingRequired.map((key) => fieldLabels[key]);
+    setError(`Please fill in the required fields: ${fieldNames.join(", ")}.`);
+    setLoading(false);
+    return;
+  } else {
+    setInvalidFields([]); // Καθαρίζει όταν είναι ΟΚ
+  }
+
+  try {
+    const r = await fetch("/api/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(form),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || "Failed");
+    setReport(data);
+  } catch (err) {
+    setError(err.message);
+  } finally {
+    setLoading(false);
+  }
+};
+
 
   // Spinner animation keyframes
   if (typeof document !== "undefined" && !document.getElementById("spinner-style")) {
@@ -79,10 +83,10 @@ export default function Home() {
       <p style={{marginTop:0, color:"#555"}}>Validate your idea. Build with AI guidance.</p>
 
       <form onSubmit={submit} style={{display:"grid", gap:12, marginTop:16}}>
-        <Input label="One-liner *" name="oneLiner" value={form.oneLiner} onChange={onChange} missingFields={missingFields} placeholder="e.g., AI tool that plans weekly meals for diabetics"/>
-        <Input label="Target user *" name="targetUser" value={form.targetUser} onChange={onChange} missingFields={missingFields} placeholder="Who is it for?"/>
-        <TextArea label="Problem (pain & frequency) *" name="pain" value={form.pain} onChange={onChange} missingFields={missingFields}/>
-        <TextArea label="Current alternatives / competitors *" name="alternatives" value={form.alternatives} onChange={onChange} missingFields={missingFields}/>
+        <Input label="One-liner *" name="oneLiner" value={form.oneLiner} onChange={onChange} invalidFields={invalidFields} placeholder="e.g., AI tool that plans weekly meals for diabetics"/>
+        <Input label="Target user *" name="targetUser" value={form.targetUser} onChange={onChange} invalidFields={invalidFields} placeholder="Who is it for?"/>
+        <TextArea label="Problem (pain & frequency) *" name="pain" value={form.pain} onChange={onChange} invalidFields={invalidFields}/>
+        <TextArea label="Current alternatives / competitors *" name="alternatives" value={form.alternatives} onChange={onChange} invalidFields={invalidFields}/>
         <Input label="Willingness-to-pay / pricing guess (Optional)" name="pricing" value={form.pricing} onChange={onChange} placeholder="$/month"/>
         <TextArea label="Founder fit (background/edge) (Optional)" name="founderFit" value={form.founderFit} onChange={onChange}/>
 
@@ -142,6 +146,9 @@ export default function Home() {
         <div style={{marginTop:24, padding:16, border:"1px solid #eee", borderRadius:8}}>
           <h3 style={{marginTop:0}}>Your Report</h3>
           <p><strong>Total:</strong> {report.total}/100 — <strong>{report.verdict}</strong></p>
+          {report?.note && (
+            <p style={{marginTop:8, color:"#8a6d3b"}}>Note: {report.note}</p>
+          )}
           <table style={{borderCollapse:"collapse"}}>
             <tbody>
               {Object.entries(report.scores || {}).map(([k,v])=>(
@@ -163,8 +170,8 @@ export default function Home() {
   );
 }
 
-function Input({ label, name, value, onChange, missingFields = [], ...props }) {
-  const isMissing = missingFields.includes(name);
+function Input({ label, name, value, onChange, invalidFields = [], ...props }) {
+  const isInvalid = invalidFields.includes(name);
   return (
     <label style={{ display: "grid", gap: 6 }}>
       <span style={{ fontSize: 14, color: "#333" }}>{label}</span>
@@ -175,17 +182,17 @@ function Input({ label, name, value, onChange, missingFields = [], ...props }) {
         onChange={onChange}
         style={{
           padding: "10px 12px",
-          border: `1px solid ${isMissing ? "#e11d48" : "#ddd"}`,
+          border: `1px solid ${isInvalid ? "#e11d48" : "#ddd"}`,
           borderRadius: 6,
-          outline: "none"
+          outline: "none",
         }}
       />
     </label>
   );
 }
 
-function TextArea({ label, name, value, onChange, missingFields = [], ...props }) {
-  const isMissing = missingFields.includes(name);
+function TextArea({ label, name, value, onChange, invalidFields = [], ...props }) {
+  const isInvalid = invalidFields.includes(name);
   return (
     <label style={{ display: "grid", gap: 6 }}>
       <span style={{ fontSize: 14, color: "#333" }}>{label}</span>
@@ -197,15 +204,14 @@ function TextArea({ label, name, value, onChange, missingFields = [], ...props }
         rows={3}
         style={{
           padding: "10px 12px",
-          border: `1px solid ${isMissing ? "#e11d48" : "#ddd"}`,
+          border: `1px solid ${isInvalid ? "#e11d48" : "#ddd"}`,
           borderRadius: 6,
-          outline: "none"
+          outline: "none",
         }}
       />
     </label>
   );
 }
-
 
 function Section({title, items=[]}) {
   return (
